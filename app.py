@@ -140,7 +140,7 @@ def upload_file(chat_id, file_path):
 
 
 def download_file(url, file_name="remote_file"):
-    """دانلود فایل از URL و ذخیره توی temp"""
+    """دانلود فایل از URL"""
     if not url:
         return None
     try:
@@ -158,16 +158,8 @@ def download_file(url, file_name="remote_file"):
         return None
 
 
-def download_rubika_file(file_id, file_name="voice_input"):
-    """دانلود فایل از سرور روبیکا با file_id"""
-    # روبیکا برای دانلود فایل، متد getFile نداره توی API رسمی
-    # اما file_id رو می‌شه از روی پیام کاربر گرفت
-    # این تابع فعلاً فایل رو از file_id نمی‌گیره، از URL استفاده می‌کنه
-    return None
-
-
 def convert_to_voice(input_path):
-    """تبدیل هر فرمت صوتی به ویس ogg/opus برای روبیکا"""
+    """تبدیل هر فرمت صوتی به ویس ogg/opus"""
     if not input_path or not os.path.isfile(input_path):
         return None
     try:
@@ -175,18 +167,17 @@ def convert_to_voice(input_path):
             tempfile.gettempdir(),
             f"voice_{int(time.time())}.ogg"
         )
-        # از ffmpeg برای تبدیل به ogg/opus استفاده می‌کنیم
         import subprocess
         command = [
             "ffmpeg", "-y",
             "-i", input_path,
-            "-vn",                      # بدون ویدیو
-            "-c:a", "libopus",          # کدک Opus
-            "-b:a", "48k",              # بیتریت
+            "-vn",
+            "-c:a", "libopus",
+            "-b:a", "48k",
             "-vbr", "on",
             "-compression_level", "10",
-            "-ac", "1",                 # mono
-            "-ar", "48000",             # sample rate
+            "-ac", "1",
+            "-ar", "48000",
             output_path
         ]
         result = subprocess.run(
@@ -210,13 +201,10 @@ def convert_to_voice(input_path):
 def send_voice(chat_id, voice_path, text="", reply_to_message_id=None):
     """آپلود و ارسال ویس"""
     try:
-        # 1) آپلود فایل
         file_id = upload_file(chat_id, voice_path)
         if not file_id:
             print("[VOICE] upload failed")
             return None
-
-        # 2) ارسال به عنوان voice
         body = {
             "chat_id": str(chat_id),
             "file_id": str(file_id),
@@ -225,7 +213,6 @@ def send_voice(chat_id, voice_path, text="", reply_to_message_id=None):
             body["text"] = str(text)
         if reply_to_message_id is not None:
             body["reply_to_message_id"] = reply_to_message_id
-
         return api_data("sendVoice", body)
     except Exception as e:
         print(f"[VOICE SEND ERROR] {e}")
@@ -391,8 +378,6 @@ def process_tags(text, message=None, bot_info=None):
     vals = {
         "تایم": now.strftime("%H:%M:%S"),
         "time": now.strftime("%H:%M:%S"),
-        "ساعت": now.strftime("%H:%M:%S"),
-        "hour": now.strftime("%H:%M:%S"),
         "تاریخ": now.strftime("%Y-%m-%d"),
         "date": now.strftime("%Y-%m-%d"),
         "تاریخ و ساعت": now.strftime("%Y-%m-%d %H:%M:%S"),
@@ -400,11 +385,9 @@ def process_tags(text, message=None, bot_info=None):
         "روز هفته": weekdays[now.weekday()],
         "weekday": now.strftime("%A"),
         "تاریخ شمسی": f"{jy:04d}/{jm:02d}/{jd:02d}",
-        "persian_date": f"{jy:04d}/{jm:02d}/{jd:02d}",
         "ماه شمسی": pmonths[jm - 1],
         "persian_month": pmonths[jm - 1],
         "سال شمسی": str(jy),
-        "persian_year": str(jy),
         "نام کاربر": first_name,
         "user_name": first_name,
         "نام کاربری": username,
@@ -419,7 +402,6 @@ def process_tags(text, message=None, bot_info=None):
         "bot_username": bot_info.get("username", ""),
         "تعداد نفرات": str(len(users_count)),
         "user_count": str(len(users_count)),
-        "users_count": str(len(users_count)),
     }
 
     for k, v in vals.items():
@@ -427,17 +409,6 @@ def process_tags(text, message=None, bot_info=None):
         text = re.sub(r"\{\s*" + ek + r"\s*\}", str(v), text, flags=re.I)
         text = re.sub(r"\{\s*(?:تگ|tag)\s*" + ek + r"\s*\}", str(v), text, flags=re.I)
 
-    def rand_num(m):
-        try:
-            a, b = [int(x.strip()) for x in m.group(1).split("-", 1)]
-            return str(__import__("random").randint(min(a, b), max(a, b)))
-        except Exception:
-            return m.group(0)
-
-    text = re.sub(
-        r"\{\s*(?:تگ|tag)?\s*(?:عدد تصادفی|random_number)\s*=\s*([^}]+)\}",
-        rand_num, text, flags=re.I
-    )
     return text
 
 
@@ -497,9 +468,9 @@ KEYBOARD_PACKAGES = []
 INLINE_PACKAGES = []
 
 # ============================
-# 🎤 Voice mode (آهنگ به ویس)
+# 🎤 Voice mode
 # ============================
-VOICE_MODE_USERS = {}  # {uid: True/False}
+VOICE_MODE_USERS = {}
 VOICE_MODE_PROMPT = "🎤 فایل صوتی خود را ارسال کنید تا به ویس تبدیل شود:"
 VOICE_MODE_SUCCESS = "✅ فایل شما به ویس تبدیل شد!"
 VOICE_MODE_ERROR = "❌ خطا در تبدیل فایل. لطفاً دوباره امتحان کنید."
@@ -662,7 +633,6 @@ def send_configured(item, message, destination_type=None, destination_id="defaul
 # 🎤 پردازش ویس
 # ============================
 def handle_voice_conversion(message):
-    """وقتی کاربر فایل صوتی فرستاد، به ویس تبدیل کن"""
     chat_id = message.get("chat_id")
     uid = str(message.get("sender_id") or "")
     file = message.get("file") or {}
@@ -679,26 +649,18 @@ def handle_voice_conversion(message):
 
     send_message(chat_id, "⏳ در حال تبدیل به ویس...")
 
-    # دانلود فایل از روبیکا
-    # روبیکا متد getFile نداره، پس باید از file_id استفاده کنیم
-    # ولی برای دانلود، نیاز به URL داریم. روبیکا معمولاً URL فایل رو توی پیام می‌ده
     file_url = file.get("url") or file.get("file_url") or file.get("download_url")
     if not file_url:
-        # اگه URL نداشت، نمی‌تونیم دانلود کنیم
-        # ولی خوشبختانه روبیکا توی file_id خودش URL رو داره
-        # راه‌حل: از file_id به عنوان URL استفاده می‌کنیم (اگه روبیکا پشتیبانی کنه)
-        send_message(chat_id, "❌ لینک دانلود فایل پیدا نشد. لطفاً فایل را دوباره ارسال کنید.")
+        send_message(chat_id, "❌ لینک دانلود فایل پیدا نشد.")
         set_voice_mode(uid, False)
         return
 
-    # دانلود
     local_input = download_file(file_url, file_name)
     if not local_input:
         send_message(chat_id, VOICE_MODE_ERROR)
         set_voice_mode(uid, False)
         return
 
-    # تبدیل
     voice_path = convert_to_voice(local_input)
     if not voice_path:
         send_message(chat_id, VOICE_MODE_ERROR)
@@ -709,10 +671,8 @@ def handle_voice_conversion(message):
         set_voice_mode(uid, False)
         return
 
-    # آپلود و ارسال
     result = send_voice(chat_id, voice_path, text="", reply_to_message_id=message.get("message_id"))
 
-    # پاک‌سازی
     for p in (local_input, voice_path):
         try:
             if p and os.path.isfile(p):
@@ -750,7 +710,6 @@ def handle_command(message, command):
 
 
 def handle_button(message, button_id):
-    # دکمه بررسی عضویت
     if button_id == "fj_check":
         uid = str(message.get("sender_id") or "")
         if is_user_joined(uid):
@@ -846,7 +805,6 @@ def handle_update(update):
         stats_data["total_messages"] = stats_data.get("total_messages", 0) + 1
         save_stats()
 
-        # فقط پیام‌های جدید
         mid = extract_update_message_id(update)
         if mid is not None:
             smid = str(mid)
@@ -863,7 +821,6 @@ def handle_update(update):
             handle_button(message, button_id)
             return
 
-        # ===== state: voice mode =====
         uid = str(message.get("sender_id") or "")
         file = message.get("file") or {}
 
@@ -879,7 +836,6 @@ def handle_update(update):
                 send_message(message.get("chat_id"), "❌ لطفاً یک فایل صوتی ارسال کنید.")
                 return
 
-        # ===== دستورات =====
         if text.lower() in ("/start", "start"):
             if not is_user_joined(uid):
                 send_message(
@@ -897,22 +853,18 @@ def handle_update(update):
             )
             return
 
-        # ===== دستور /voice =====
         if text.lower() in ("/voice", "/ویس", "ویس", "صدا به ویس"):
             set_voice_mode(uid, True)
             send_message(message.get("chat_id"), VOICE_MODE_PROMPT)
             return
 
-        # ===== دستورات سفارشی =====
         for command in COMMANDS:
             if handle_command(message, command):
                 return
 
-        # ===== فایل ورودی (وقتی voice mode فعال نیست) =====
         if file.get("file_id"):
             print(f"[INCOMING FILE] {file.get('file_name', '')} => {file.get('file_id')}")
 
-        # ===== دکمه‌های متنی =====
         for button in BUTTONS:
             if normalize(button.get("text")) == normalize(text):
                 handle_button(message, button.get("id"))
@@ -943,7 +895,6 @@ def webhook():
 
 @app.route("/broadcast", methods=["POST"])
 def broadcast():
-    """ارسال پیام همزمان به همه کاربران"""
     try:
         data = request.get_json(silent=True) or {}
         text = str(data.get("text") or "").strip()
@@ -976,7 +927,6 @@ def broadcast():
             t = threading.Thread(target=send_one, args=(uid,), daemon=True)
             t.start()
             threads.append(t)
-            # محدودیت: حداکثر ۲۰ تا همزمان
             if len(threads) >= 20:
                 for th in threads:
                     th.join(timeout=5)
@@ -997,7 +947,6 @@ def broadcast():
 
 @app.route("/stats", methods=["GET"])
 def stats():
-    """آمار ربات"""
     return jsonify({
         "status": "OK",
         "data": {
@@ -1015,7 +964,6 @@ def stats():
 
 @app.route("/users", methods=["GET"])
 def users_list():
-    """لیست کاربران (بدون اطلاعات حساس)"""
     limit = int(request.args.get("limit", 100))
     users_list_data = []
     for uid, info in list(users_count.items())[:limit]:
@@ -1036,7 +984,6 @@ def users_list():
 
 @app.route("/voice-test", methods=["GET"])
 def voice_test():
-    """تست ffmpeg"""
     try:
         import subprocess
         result = subprocess.run(

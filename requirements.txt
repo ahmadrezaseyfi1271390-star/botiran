@@ -1,3 +1,4 @@
-flask
+pyrubi
+rulog
+nest_asyncio
 requests
-static-ffmpeg

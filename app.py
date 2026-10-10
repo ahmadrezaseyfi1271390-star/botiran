@@ -6,6 +6,7 @@ from pyrubi.types import Message
 
 # --- تنظیمات ---
 DATA_FILE = "qa_data.json"
+ADMINS_FILE = "admins.json"
 UPLOAD_DIR = "uploads"
 ADMIN_PASSWORD = "1271390"
 
@@ -60,6 +61,16 @@ def save_data(data):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
+def load_admins():
+    if os.path.exists(ADMINS_FILE):
+        with open(ADMINS_FILE, "r", encoding="utf-8") as f:
+            return set(json.load(f))
+    return set()
+
+def save_admins(admins_set):
+    with open(ADMINS_FILE, "w", encoding="utf-8") as f:
+        json.dump(list(admins_set), f, ensure_ascii=False)
+
 def apply_formatting(text):
     text = re.sub(r'\*\*(.+?)\*\*', r'**\1**', text)
     text = re.sub(r'__(.+?)__', r'__\1__', text)
@@ -69,7 +80,7 @@ def apply_formatting(text):
     return text
 
 qa_data = load_data()
-admin_authenticated = False
+admins = load_admins()
 conversation_state = None
 temp_question = ""
 
@@ -96,15 +107,19 @@ client = Client(auth=AUTH_KEY, private=PRIVATE_KEY)
 
 @client.on_message()
 def handler(message: Message):
-    global qa_data, admin_authenticated, conversation_state, temp_question
+    global qa_data, admins, conversation_state, temp_question
 
     try:
+        sender_id = getattr(message, 'sender_id', None) or getattr(message, 'sender_guid', None)
+
         is_text = bool(message.text)
         is_file = bool(getattr(message, 'file', None)) or bool(getattr(message, 'photo', None)) or \
                   bool(getattr(message, 'video', None)) or bool(getattr(message, 'gif', None))
 
-        # --- حالت‌های چند مرحله‌ای ---
+        # --- حالت‌های چند مرحله‌ای (فقط برای مدیرها) ---
         if conversation_state == "waiting_question":
+            if sender_id not in admins:
+                return
             if not is_text:
                 safe_reply(message, "لطفاً متن سوال را بفرست.")
                 return
@@ -114,6 +129,8 @@ def handler(message: Message):
             return
 
         if conversation_state == "waiting_answer":
+            if sender_id not in admins:
+                return
             if is_text:
                 qa_data[temp_question] = {"type": "text", "content": message.text}
                 save_data(qa_data)
@@ -153,25 +170,30 @@ def handler(message: Message):
 
         text = message.text.strip()
 
-        # --- 1. بررسی رمز ---
+        # --- 1. بررسی رمز: هر کسی رمز رو بفرسته، مدیر میشه ---
         if text == ADMIN_PASSWORD:
-            admin_authenticated = True
-            safe_reply(message, ADMIN_HELP)
+            if sender_id not in admins:
+                admins.add(sender_id)
+                save_admins(admins)
+                safe_reply(message, "شما به عنوان مدیر انتخاب شدید.\n\n" + ADMIN_HELP)
+            else:
+                safe_reply(message, "شما قبلاً به عنوان مدیر انتخاب شده‌اید.\n\n" + ADMIN_HELP)
             return
 
         # --- 2. خروج از حالت مدیر ---
-        if admin_authenticated and text == "خروج":
-            admin_authenticated = False
+        if text == "خروج" and sender_id in admins:
+            admins.discard(sender_id)
+            save_admins(admins)
             safe_reply(message, "از حالت مدیر خارج شدی.")
             return
 
-        # --- 3. راهنما (فقط برای مدیر) ---
-        if admin_authenticated and text in ["راهنما", "help", "/help"]:
+        # --- 3. راهنما (فقط برای مدیرها) ---
+        if text in ["راهنما", "help", "/help"] and sender_id in admins:
             safe_reply(message, ADMIN_HELP)
             return
 
-        # --- 4. دستورات مدیریتی ---
-        if admin_authenticated:
+        # --- 4. دستورات مدیریتی (فقط برای مدیرها) ---
+        if sender_id in admins:
             if text == "&&&":
                 conversation_state = "waiting_question"
                 safe_reply(message, "لطفا سؤال را وارد کنید")
@@ -181,7 +203,7 @@ def handler(message: Message):
                 if not qa_data:
                     safe_reply(message, "هیچ سوالی ذخیره نشده است.")
                 else:
-                    list_text = "لیست سوال و جواب‌ها:\n" + "-"*20 + "\n"
+                    list_text = "لیست سوال و جواب‌ها:\n" + "-" * 20 + "\n"
                     for idx, (q, a) in enumerate(qa_data.items(), 1):
                         if a["type"] == "text":
                             list_text += f"{idx}. سؤال: {q}\n   جواب: {a['content']}\n"
@@ -195,7 +217,7 @@ def handler(message: Message):
                 idx = int(delete_match.group(1))
                 if 1 <= idx <= len(qa_data):
                     keys = list(qa_data.keys())
-                    q_del = keys[idx-1]
+                    q_del = keys[idx - 1]
                     if qa_data[q_del]["type"] == "file":
                         fp = qa_data[q_del]["content"]
                         if os.path.exists(fp):

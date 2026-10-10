@@ -8,7 +8,24 @@ from pyrubi.types import Message
 DATA_FILE = "qa_data.json"
 UPLOAD_DIR = "uploads"
 ADMIN_PASSWORD = "1271390"
-SESSION_NAME = "mySelf"
+
+# --- کلیدهای احراز هویت اکانت جدید ---
+AUTH_KEY = "rjqcaknnfqgqhzndpewvmkitxfrgomvu"
+PRIVATE_KEY = """-----BEGIN RSA PRIVATE KEY-----
+MIICWgIBAAKBgQCwZeG58xGYzujZkVbIFDkrAlof9Icoa+D4aLVyld5XVDKPmRwD
+d3SkjHM3/lXBvdny5TRvF2p7QSTJzkGPnrm8f39EKZ9bjhpf2lyT+b6dlFWF8Snj
+bXtwGUbdNhwuN1RGpdUy0jn2rmeZWyqYilWRMm0tlYN0uGSs2Fy1PBtATwIDAQAB
+An8884eA5j1QmMWYGKIQ8D7mV0lD8Eqt1l8v6eUmTA7nSUgSYRulPqqLr0C4LCuH
+tjDCiO6aqmGdH5CcDdJcQyBLd9CSKOCc7cUjOpSOHB+hyDzUm525VOqxEnvhuTXs
+Rxj72bqlpd3qqCcyA4ZyGbMM6JbAuxPpKIP7akVY3tQBAkEAytKYxYTGJU7zna0U
+Yke91DMu8Dm+Ahh3ol5wx4nM8540pEuVSfIlfTUJRs2kED42res0sBYb6vFQaWdF
+NpQUAQJBAN6lqwl/snuOmThYfMI8Sx+BWpwbZCi+GxUKtvRTsY6HpAUPCI9fmQ6D
+Bl/Ynn6vUqTbKL3j0SObzCgJON7ZFE8CQQCJnZjgs/UJzWcIfi5NfOX1PAFGJ7ef
+jmBl//Q/v2UbiyWmsE4MDUuYh8rSiqceCkhpeySVsXqhz7hCvDo/DPwBAkAnJ1El
+sXwsuE3/l6gQ7FN1reTGURbTB2Nx1tmHq/QskXPpo9QoinI7GBWV4100ABbzgMrw
+YdDUh0BmxgBnSBuHAkArmOvCD1a71qMSNomfdyfx6wRfrMqYGfoojt7uG/J3NY5g
+oiMhyMOHtZhSrKyWEsWuQR9UcHis+142gcezc4dh
+-----END RSA PRIVATE KEY-----"""
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
@@ -23,29 +40,21 @@ def save_data(data):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-# --- توابع فرمت‌دهی ---
 def apply_formatting(text):
-    # بولد
     text = re.sub(r'\*\*(.+?)\*\*', r'**\1**', text)
-    # ایتالیک
     text = re.sub(r'__(.+?)__', r'__\1__', text)
-    # زیرخط
     text = re.sub(r'--(.+?)--', r'--\1--', text)
-    # اسپویلر
     text = re.sub(r'\|\|(.+?)\|\|', r'||\1||', text)
-    # لینک: متن = تگ https://link
     text = re.sub(r'(.+?)\s*=\s*تگ\s+(https?://\S+)', r'[\1](\2)', text)
     return text
 
-# --- مقداردهی اولیه ---
 qa_data = load_data()
 conversation_state = None
 temp_question = ""
 
-# --- ساخت کلاینت (از سشن rulog استفاده میکنه) ---
-client = Client(SESSION_NAME)
+# --- ساخت کلاینت با کلیدهای دستی ---
+client = Client(auth=AUTH_KEY, private=PRIVATE_KEY)
 
-# --- هندلر اصلی ---
 @client.on_message()
 def handler(message: Message):
     global qa_data, conversation_state, temp_question
@@ -54,27 +63,22 @@ def handler(message: Message):
     is_file = bool(getattr(message, 'file', None)) or bool(getattr(message, 'photo', None)) or \
               bool(getattr(message, 'video', None)) or bool(getattr(message, 'gif', None))
     
-    # --- حالت‌های چند مرحله‌ای ---
     if conversation_state == "waiting_password":
         if is_text and message.text == ADMIN_PASSWORD:
             conversation_state = None
-            message.reply("✅ رمز صحیح است.\n\n"
-                         "`&&&` - ذخیره سوال و جواب جدید\n"
-                         "`####` - مشاهده لیست\n"
-                         "`1 حذف سؤال` - حذف سوال شماره 1")
+            message.reply("✅ رمز صحیح است.\n\n`&&&` - ذخیره\n`####` - لیست\n`1 حذف سؤال` - حذف")
         else:
             conversation_state = None
-            message.reply("❌ رمز اشتباه است.")
+            message.reply("❌ رمز اشتباه.")
         return
     
     if conversation_state == "waiting_question":
         if not is_text:
-            message.reply("❌ لطفاً یک متن (سوال) ارسال کنید.")
+            message.reply("❌ لطفاً متن سوال را بفرست.")
             return
         temp_question = message.text
         conversation_state = "waiting_answer"
-        message.reply("✅ سوال ذخیره شد. حالا پیام جواب را ارسال کنید:\n"
-                     "(می‌توانید متن، عکس، ویدیو یا فایل بفرستید)")
+        message.reply("✅ سوال ذخیره شد. حالا جواب را بفرست:")
         return
     
     if conversation_state == "waiting_answer":
@@ -82,68 +86,46 @@ def handler(message: Message):
             qa_data[temp_question] = {"type": "text", "content": message.text}
             save_data(qa_data)
             message.reply("✅ ذخیره شد.")
-            conversation_state = None
-            temp_question = ""
         elif is_file:
             try:
-                # پیدا کردن فایل
                 file_obj = None
                 for attr in ['file', 'photo', 'video', 'gif']:
-                    val = getattr(message, attr, None)
-                    if val:
-                        file_obj = val
+                    if getattr(message, attr, None):
+                        file_obj = getattr(message, attr)
                         break
-                
                 if file_obj is None:
                     message.reply("❌ فایل شناسایی نشد.")
                     return
-                
-                # اسم فایل
                 file_name = f"file_{len(qa_data)}.dat"
                 file_path = os.path.join(UPLOAD_DIR, file_name)
-                
-                # دانلود فایل
-                try:
-                    if hasattr(message, 'download'):
-                        message.download(file_path)
-                    elif hasattr(file_obj, 'download'):
-                        file_obj.download(file_path)
-                    else:
-                        message.reply("❌ متد دانلود پیدا نشد.")
-                        return
-                except Exception as e:
-                    message.reply(f"❌ خطا در دانلود: {str(e)}")
+                if hasattr(message, 'download'):
+                    message.download(file_path)
+                elif hasattr(file_obj, 'download'):
+                    file_obj.download(file_path)
+                else:
+                    message.reply("❌ متد دانلود پیدا نشد.")
                     return
-                
                 qa_data[temp_question] = {"type": "file", "content": file_path}
                 save_data(qa_data)
                 message.reply("✅ فایل ذخیره شد.")
-                conversation_state = None
-                temp_question = ""
             except Exception as e:
-                message.reply(f"❌ خطا: {str(e)}")
-                conversation_state = None
-                temp_question = ""
-        else:
-            message.reply("❌ لطفاً متن، عکس، ویدیو یا فایل ارسال کنید.")
+                message.reply(f"❌ خطا: {e}")
+        conversation_state = None
+        temp_question = ""
         return
     
-    # --- دستورات مدیریتی ---
     if is_text:
         text = message.text.strip()
         
-        # بررسی دستورات
         if text in ["&&&", "####"] or re.match(r"^\d+\s+حذف\s+سؤال$", text):
             conversation_state = "waiting_password"
-            message.reply("🔐 لطفاً رمز مدیریتی را وارد کنید:")
+            message.reply("🔐 رمز مدیریتی:")
             return
         
-        # --- پاسخ خودکار ---
         for question, answer_data in qa_data.items():
             if question in text:
                 if answer_data["type"] == "text":
-                    response = apply_formatting(answer_data["content"])
-                    message.reply(response)
+                    message.reply(apply_formatting(answer_data["content"]))
                 elif answer_data["type"] == "file":
                     fp = answer_data["content"]
                     if os.path.exists(fp):
@@ -152,16 +134,10 @@ def handler(message: Message):
                                 message.reply_file(fp)
                             elif hasattr(client, 'send_file'):
                                 client.send_file(message.chat_id, fp)
-                            else:
-                                message.reply("⚠️ متد ارسال فایل پیدا نشد.")
                         except Exception as e:
-                            message.reply(f"❌ خطا در ارسال فایل: {str(e)}")
-                    else:
-                        message.reply("⚠️ فایل یافت نشد.")
+                            message.reply(f"❌ خطا: {e}")
                 return
 
-# --- اجرا ---
 if __name__ == "__main__":
     print("🤖 ربات شروع به کار کرد...")
-    print(f"🔐 رمز مدیریتی: {ADMIN_PASSWORD}")
     client.run()

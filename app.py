@@ -1,507 +1,167 @@
-# -*- coding: utf-8 -*-
-"""
-🤖 ربات تبدیل آهنگ به ویس - API مستقیم روبیکا
-📦 Flask + Requests + static-ffmpeg
-🎯 دکمه‌های اینلاین نمایشی (بدون کالبک)
-"""
-
-from flask import Flask, request, jsonify
-import requests
-import threading
-import os
-import tempfile
-import subprocess
-import time
 import json
+import os
 import re
-from datetime import datetime
+from pyrubi import Client
+from pyrubi.types import Message
 
-app = Flask(__name__)
+# --- تنظیمات ---
+DATA_FILE = "qa_data.json"
+UPLOAD_DIR = "uploads"
+ADMIN_PASSWORD = "1271390"
+SESSION_NAME = "mySelf"
 
-# ===== توکن ربات =====
-TOKEN = "CEFCFD0LBGPXPPEEPPYZEWWIKTTFIVFFDTBPTDAZKLJRVCPEZOHRXLGBOCPEJXRH"
-BASE = f"https://botapi.rubika.ir/v3/{TOKEN}"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# ===== ffmpeg =====
-try:
-    import static_ffmpeg
-    static_ffmpeg.add_paths()
-    print("[✓] FFMPEG loaded")
-except Exception as e:
-    print(f"[✗] FFMPEG error: {e}")
+# --- توابع مدیریت داده ---
+def load_data():
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
 
+def save_data(data):
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
-# ============================
-# 🧰 توابع API
-# ============================
-def api(method, payload=None):
-    try:
-        r = requests.post(
-            f"{BASE}/{method}",
-            json=payload or {},
-            headers={"Content-Type": "application/json"},
-            timeout=30
-        )
-        return r.json()
-    except Exception as e:
-        print(f"[API ERROR] {method}: {e}")
-        return None
+# --- توابع فرمت‌دهی ---
+def apply_formatting(text):
+    # بولد
+    text = re.sub(r'\*\*(.+?)\*\*', r'**\1**', text)
+    # ایتالیک
+    text = re.sub(r'__(.+?)__', r'__\1__', text)
+    # زیرخط
+    text = re.sub(r'--(.+?)--', r'--\1--', text)
+    # اسپویلر
+    text = re.sub(r'\|\|(.+?)\|\|', r'||\1||', text)
+    # لینک: متن = تگ https://link
+    text = re.sub(r'(.+?)\s*=\s*تگ\s+(https?://\S+)', r'[\1](\2)', text)
+    return text
 
+# --- مقداردهی اولیه ---
+qa_data = load_data()
+conversation_state = None
+temp_question = ""
 
-def send_message(chat_id, text, inline_keypad=None, reply_to=None):
-    body = {"chat_id": str(chat_id), "text": str(text)}
-    if inline_keypad:
-        body["inline_keypad"] = inline_keypad
-        body["inline_keypad_type"] = "New"
-    if reply_to:
-        body["reply_to_message_id"] = reply_to
-    return api("sendMessage", body)
+# --- ساخت کلاینت (از سشن rulog استفاده میکنه) ---
+client = Client(SESSION_NAME)
 
-
-def edit_message(chat_id, message_id, text, inline_keypad=None):
-    body = {
-        "chat_id": str(chat_id),
-        "message_id": message_id,
-        "text": str(text)
-    }
-    if inline_keypad:
-        body["inline_keypad"] = inline_keypad
-        body["inline_keypad_type"] = "Edit"
-    return api("editMessageText", body)
-
-
-def upload_file(chat_id, file_path):
-    try:
-        with open(file_path, "rb") as f:
-            r = requests.post(
-                f"{BASE}/sendFile",
-                files={"file": f},
-                data={"chat_id": str(chat_id)},
-                timeout=120
-            )
-        data = r.json()
-        return data.get("data", {}).get("file_id")
-    except Exception as e:
-        print(f"[UPLOAD ERROR] {e}")
-        return None
-
-
-def send_voice(chat_id, file_id, reply_to=None):
-    body = {"chat_id": str(chat_id), "file_id": str(file_id)}
-    if reply_to:
-        body["reply_to_message_id"] = reply_to
-    return api("sendVoice", body)
-
-
-# ============================
-# 🕐 اطلاعات زمان
-# ============================
-def gregorian_to_jalali(gy, gm, gd):
-    gdm = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
-    if gy > 1600:
-        jy = 979
-        gy -= 1600
-    else:
-        jy = 0
-        gy -= 621
-    gy2 = gy + 1 if gm > 2 else gy
-    days = 365 * gy + (gy2 + 3) // 4 - (gy2 + 99) // 100 + (gy2 + 399) // 400 - 80 + gd + gdm[gm - 1]
-    jy += 33 * (days // 12053)
-    days %= 12053
-    jy += 4 * (days // 1461)
-    days %= 1461
-    if days > 365:
-        jy += (days - 1) // 365
-        days = (days - 1) % 365
-    jm = days // 31 + 1 if days < 186 else (days - 186) // 30 + 7
-    jd = days % 31 + 1 if days < 186 else (days - 186) % 30 + 1
-    return jy, jm, jd
-
-
-def get_now_info():
-    now = datetime.now()
-    jy, jm, jd = gregorian_to_jalali(now.year, now.month, now.day)
-    pmonths = ["فروردین", "اردیبهشت", "خرداد", "تیر", "مرداد", "شهریور",
-               "مهر", "آبان", "آذر", "دی", "بهمن", "اسفند"]
-    weekdays = ["دوشنبه", "سه‌شنبه", "چهارشنبه", "پنجشنبه", "جمعه", "شنبه", "یکشنبه"]
+# --- هندلر اصلی ---
+@client.on_message()
+def handler(message: Message):
+    global qa_data, conversation_state, temp_question
     
-    return {
-        "time": now.strftime("%H:%M:%S"),
-        "date": f"{jd} {pmonths[jm-1]} {jy}",
-        "weekday": weekdays[now.weekday()],
-        "full": f"{now.strftime('%H:%M:%S')} - {jd} {pmonths[jm-1]} {jy}"
-    }
-
-
-# ============================
-# 🎵 اطلاعات فایل صوتی
-# ============================
-def get_audio_info(file_path, original_name=""):
-    info = {
-        "duration": "?",
-        "duration_sec": 0,
-        "format": "?",
-        "size": 0,
-        "name": original_name or "audio",
-        "artist": "نامشخص",
-        "title": ""
-    }
+    is_text = bool(message.text)
+    is_file = bool(getattr(message, 'file', None)) or bool(getattr(message, 'photo', None)) or \
+              bool(getattr(message, 'video', None)) or bool(getattr(message, 'gif', None))
     
-    try:
-        cmd = [
-            "ffprobe", "-v", "quiet",
-            "-print_format", "json",
-            "-show_format", "-show_streams",
-            file_path
-        ]
-        
-        result = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=30
-        )
-        
-        if result.returncode == 0:
-            data = json.loads(result.stdout.decode())
-            
-            fmt = data.get("format", {})
-            duration = float(fmt.get("duration", 0))
-            info["duration_sec"] = int(duration)
-            info["duration"] = format_duration(duration)
-            info["format"] = fmt.get("format_name", "?").upper().split(",")[0]
-            info["size"] = int(fmt.get("size", 0))
-            
-            tags = fmt.get("tags", {})
-            artist = tags.get("artist") or tags.get("ARTIST") or ""
-            title = tags.get("title") or tags.get("TITLE") or ""
-            
-            if artist:
-                info["artist"] = artist
-            if title:
-                info["title"] = title
-    except Exception as e:
-        print(f"[FFPROBE ERROR] {e}")
-    
-    # اگه metadata نبود، از اسم فایل استخراج کن
-    if original_name:
-        base_name = os.path.splitext(original_name)[0]
-        if " - " in base_name:
-            parts = base_name.split(" - ", 1)
-            if info["artist"] == "نامشخص":
-                info["artist"] = parts[0].strip()
-            if not info["title"]:
-                info["title"] = parts[1].strip()
+    # --- حالت‌های چند مرحله‌ای ---
+    if conversation_state == "waiting_password":
+        if is_text and message.text == ADMIN_PASSWORD:
+            conversation_state = None
+            message.reply("✅ رمز صحیح است.\n\n"
+                         "`&&&` - ذخیره سوال و جواب جدید\n"
+                         "`####` - مشاهده لیست\n"
+                         "`1 حذف سؤال` - حذف سوال شماره 1")
         else:
-            if not info["title"]:
-                info["title"] = base_name
-    
-    if not info["title"]:
-        info["title"] = info["name"]
-    
-    # کوتاه‌سازی برای نمایش
-    info["name_short"] = info["name"][:35] + ("..." if len(info["name"]) > 35 else "")
-    info["artist_short"] = info["artist"][:30] + ("..." if len(info["artist"]) > 30 else "")
-    info["title_short"] = info["title"][:35] + ("..." if len(info["title"]) > 35 else "")
-    
-    return info
-
-
-def format_duration(seconds):
-    seconds = int(seconds)
-    mins = seconds // 60
-    secs = seconds % 60
-    if mins >= 60:
-        hours = mins // 60
-        mins = mins % 60
-        return f"{hours}:{mins:02d}:{secs:02d}"
-    return f"{mins}:{secs:02d}"
-
-
-def format_size(bytes_size):
-    if bytes_size < 1024:
-        return f"{bytes_size} B"
-    elif bytes_size < 1024 * 1024:
-        return f"{bytes_size / 1024:.1f} KB"
-    else:
-        return f"{bytes_size / (1024 * 1024):.1f} MB"
-
-
-# ============================
-# 🎨 ساخت کیبورد نمایشی
-# ============================
-def make_start_keypad():
-    """کیبورد نمایشی برای پیام استارت"""
-    now = get_now_info()
-    rows = [
-        {"buttons": [{"id": "show_time", "type": "Simple", "button_text": f"🕐 ساعت: {now['time']}"}]},
-        {"buttons": [{"id": "show_date", "type": "Simple", "button_text": f"📅 تاریخ: {now['date']}"}]},
-        {"buttons": [{"id": "show_day", "type": "Simple", "button_text": f"📆 روز: {now['weekday']}"}]},
-    ]
-    return {"rows": rows}
-
-
-def make_loading_keypad(info):
-    """کیبورد نمایشی در حال تبدیل"""
-    rows = [
-        {"buttons": [{"id": "load_1", "type": "Simple", "button_text": f"📁 {info['name_short']}"}]},
-        {"buttons": [{"id": "load_2", "type": "Simple", "button_text": f"🎤 {info['artist_short']}"}]},
-        {"buttons": [{"id": "load_3", "type": "Simple", "button_text": f"⏱️ {info['duration']}  |  📊 {format_size(info['size'])}"}]},
-    ]
-    return {"rows": rows}
-
-
-def make_final_keypad(info):
-    """کیبورد نمایشی نهایی"""
-    rows = [
-        {"buttons": [{"id": "fin_1", "type": "Simple", "button_text": f"🎵 {info['title_short']}"}]},
-        {"buttons": [{"id": "fin_2", "type": "Simple", "button_text": f"🎤 {info['artist_short']}"}]},
-        {"buttons": [{"id": "fin_3", "type": "Simple", "button_text": f"⏱️ {info['duration']}  |  📊 {format_size(info['size'])}"}]},
-        {"buttons": [{"id": "fin_4", "type": "Simple", "button_text": f"🎧 فرمت نهایی: OGG/Opus"}]},
-    ]
-    return {"rows": rows}
-
-
-# ============================
-# 🎤 تبدیل به ویس
-# ============================
-def download_file(url, filename):
-    try:
-        # اسم فایل رو تمیز کن
-        safe_name = re.sub(r'[^\w\s\-\.]', '_', filename)[:80]
-        path = os.path.join(tempfile.gettempdir(), safe_name)
-        r = requests.get(url, stream=True, timeout=120)
-        with open(path, "wb") as f:
-            for chunk in r.iter_content(8192):
-                f.write(chunk)
-        return path
-    except Exception as e:
-        print(f"[DOWNLOAD ERROR] {e}")
-        return None
-
-
-def convert_to_ogg(input_path):
-    try:
-        output_path = os.path.join(
-            tempfile.gettempdir(),
-            f"voice_{int(time.time())}.ogg"
-        )
-        
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", input_path,
-            "-vn",
-            "-c:a", "libopus",
-            "-b:a", "48k",
-            "-ac", "1",
-            "-ar", "48000",
-            "-vbr", "on",
-            output_path
-        ]
-        
-        result = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=180
-        )
-        
-        if result.returncode != 0:
-            print(f"[FFMPEG ERROR] {result.stderr.decode()[:300]}")
-            return None
-        
-        if os.path.exists(output_path):
-            return output_path
-        return None
-    except Exception as e:
-        print(f"[CONVERT ERROR] {e}")
-        return None
-
-
-def process_voice(message):
-    """پردازش کامل"""
-    chat_id = message.get("chat_id")
-    file = message.get("file", {})
-    file_url = file.get("url") or file.get("file_url")
-    file_name = file.get("file_name", "audio.mp3")
-    original_msg_id = message.get("message_id")
-    
-    if not file_url:
-        send_message(chat_id, "❌ لینک فایل پیدا نشد!")
+            conversation_state = None
+            message.reply("❌ رمز اشتباه است.")
         return
     
-    # ۱. پیام در حال دانلود
-    loading_result = send_message(
-        chat_id,
-        "🎧 در حال دریافت فایل...\n\n⏳ لطفاً صبر کنید",
-        inline_keypad={"rows": [{"buttons": [{"id": "loading", "type": "Simple", "button_text": "⏳ در حال دانلود..."}]}]},
-        reply_to=original_msg_id
-    )
-    
-    status_msg_id = None
-    if loading_result and loading_result.get("status") == "OK":
-        status_msg_id = loading_result.get("data", {}).get("message_id")
-    
-    # ۲. دانلود
-    input_path = download_file(file_url, file_name)
-    if not input_path:
-        if status_msg_id:
-            edit_message(chat_id, status_msg_id, "❌ دانلود فایل ناموفق بود")
+    if conversation_state == "waiting_question":
+        if not is_text:
+            message.reply("❌ لطفاً یک متن (سوال) ارسال کنید.")
+            return
+        temp_question = message.text
+        conversation_state = "waiting_answer"
+        message.reply("✅ سوال ذخیره شد. حالا پیام جواب را ارسال کنید:\n"
+                     "(می‌توانید متن، عکس، ویدیو یا فایل بفرستید)")
         return
     
-    # ۳. اطلاعات فایل
-    info = get_audio_info(input_path, file_name)
-    loading_kb = make_loading_keypad(info)
-    
-    # ۴. آپدیت با اطلاعات
-    if status_msg_id:
-        edit_message(
-            chat_id, status_msg_id,
-            f"🎧 در حال تبدیل...\n\n📁 {info['name_short']}",
-            inline_keypad=loading_kb
-        )
-    
-    # ۵. تبدیل
-    output_path = convert_to_ogg(input_path)
-    if not output_path:
-        if status_msg_id:
-            edit_message(
-                chat_id, status_msg_id,
-                "❌ تبدیل فایل ناموفق بود",
-                inline_keypad=loading_kb
-            )
-        try: os.remove(input_path)
-        except: pass
+    if conversation_state == "waiting_answer":
+        if is_text:
+            qa_data[temp_question] = {"type": "text", "content": message.text}
+            save_data(qa_data)
+            message.reply("✅ ذخیره شد.")
+            conversation_state = None
+            temp_question = ""
+        elif is_file:
+            try:
+                # پیدا کردن فایل
+                file_obj = None
+                for attr in ['file', 'photo', 'video', 'gif']:
+                    val = getattr(message, attr, None)
+                    if val:
+                        file_obj = val
+                        break
+                
+                if file_obj is None:
+                    message.reply("❌ فایل شناسایی نشد.")
+                    return
+                
+                # اسم فایل
+                file_name = f"file_{len(qa_data)}.dat"
+                file_path = os.path.join(UPLOAD_DIR, file_name)
+                
+                # دانلود فایل
+                try:
+                    if hasattr(message, 'download'):
+                        message.download(file_path)
+                    elif hasattr(file_obj, 'download'):
+                        file_obj.download(file_path)
+                    else:
+                        message.reply("❌ متد دانلود پیدا نشد.")
+                        return
+                except Exception as e:
+                    message.reply(f"❌ خطا در دانلود: {str(e)}")
+                    return
+                
+                qa_data[temp_question] = {"type": "file", "content": file_path}
+                save_data(qa_data)
+                message.reply("✅ فایل ذخیره شد.")
+                conversation_state = None
+                temp_question = ""
+            except Exception as e:
+                message.reply(f"❌ خطا: {str(e)}")
+                conversation_state = None
+                temp_question = ""
+        else:
+            message.reply("❌ لطفاً متن، عکس، ویدیو یا فایل ارسال کنید.")
         return
     
-    # ۶. آپلود
-    if status_msg_id:
-        edit_message(
-            chat_id, status_msg_id,
-            "📤 در حال آپلود ویس...",
-            inline_keypad=loading_kb
-        )
-    
-    file_id = upload_file(chat_id, output_path)
-    if not file_id:
-        if status_msg_id:
-            edit_message(
-                chat_id, status_msg_id,
-                "❌ آپلود فایل ناموفق بود",
-                inline_keypad=loading_kb
-            )
-        try:
-            os.remove(input_path)
-            os.remove(output_path)
-        except: pass
-        return
-    
-    # ۷. ارسال ویس
-    send_voice(chat_id, file_id, reply_to=original_msg_id)
-    
-    # ۸. پیام نهایی
-    if status_msg_id:
-        final_kb = make_final_keypad(info)
-        edit_message(
-            chat_id, status_msg_id,
-            f"✅ ویس شما ارسال شد!\n\n🎵 {info['title_short']}",
-            inline_keypad=final_kb
-        )
-    
-    # پاک‌سازی
-    try:
-        os.remove(input_path)
-        os.remove(output_path)
-    except: pass
-
-
-# ============================
-# 📨 پردازش پیام‌ها
-# ============================
-def handle_update(data):
-    try:
-        # فقط پیام‌های معمولی (بدون inline callback)
-        if "update" not in data:
+    # --- دستورات مدیریتی ---
+    if is_text:
+        text = message.text.strip()
+        
+        # بررسی دستورات
+        if text in ["&&&", "####"] or re.match(r"^\d+\s+حذف\s+سؤال$", text):
+            conversation_state = "waiting_password"
+            message.reply("🔐 لطفاً رمز مدیریتی را وارد کنید:")
             return
         
-        upd = data["update"]
-        if upd.get("type") != "NewMessage":
-            return
-        
-        msg = upd.get("new_message", {})
-        chat_id = upd.get("chat_id")
-        text = str(msg.get("text", "")).strip()
-        file = msg.get("file", {})
-        
-        if not chat_id:
-            return
-        
-        print(f"[MSG] text={text[:30]} | file={bool(file)}")
-        
-        # ===== دستور /start =====
-        if text == "/start":
-            now = get_now_info()
-            start_text = (
-                f"سلام! 👋\n\n"
-                f"🎵 برای تبدیل آهنگ به ویس، فایل صوتی خود را بفرست.\n\n"
-                f"📝 فقط کافیه فایل رو بفرستی، بقیه‌اش با من!"
-            )
-            send_message(
-                chat_id,
-                start_text,
-                inline_keypad=make_start_keypad()
-            )
-            return
-        
-        # ===== فایل ورودی =====
-        if file:
-            threading.Thread(
-                target=process_voice,
-                args=(msg,),
-                daemon=True
-            ).start()
-            return
-        
-        # ===== دستور ناشناخته =====
-        if text:
-            send_message(chat_id, "🎵 لطفاً یک فایل صوتی بفرست.\n\nیا /start رو بزن.")
-    
-    except Exception as e:
-        print(f"[HANDLE ERROR] {e}")
+        # --- پاسخ خودکار ---
+        for question, answer_data in qa_data.items():
+            if question in text:
+                if answer_data["type"] == "text":
+                    response = apply_formatting(answer_data["content"])
+                    message.reply(response)
+                elif answer_data["type"] == "file":
+                    fp = answer_data["content"]
+                    if os.path.exists(fp):
+                        try:
+                            if hasattr(message, 'reply_file'):
+                                message.reply_file(fp)
+                            elif hasattr(client, 'send_file'):
+                                client.send_file(message.chat_id, fp)
+                            else:
+                                message.reply("⚠️ متد ارسال فایل پیدا نشد.")
+                        except Exception as e:
+                            message.reply(f"❌ خطا در ارسال فایل: {str(e)}")
+                    else:
+                        message.reply("⚠️ فایل یافت نشد.")
+                return
 
-
-# ============================
-# 🌐 Webhook
-# ============================
-@app.route("/", methods=["POST", "GET"])
-def webhook():
-    if request.method == "GET":
-        return "IranBot is running!", 200
-    
-    try:
-        data = request.get_json(silent=True) or {}
-        threading.Thread(target=handle_update, args=(data,), daemon=True).start()
-    except Exception as e:
-        print(f"[WEBHOOK ERROR] {e}")
-    
-    return jsonify({"status": "OK"}), 200
-
-
-@app.route("/test")
-def test():
-    return jsonify({"status": "OK", "message": "IranBot works!"})
-
-
-# ============================
-# ▶️ اجرا
-# ============================
+# --- اجرا ---
 if __name__ == "__main__":
-    me = api("getMe")
-    if me and me.get("status") == "OK":
-        bot_info = me.get("data", {}).get("bot", {})
-        print(f"[✓] Bot: {bot_info.get('bot_title')} (@{bot_info.get('username')})")
-    else:
-        print(f"[✗] Token error: {me}")
-    
-    port = int(os.environ.get("PORT", "8080"))
-    app.run(host="0.0.0.0", port=port, threaded=True)
+    print("🤖 ربات شروع به کار کرد...")
+    print(f"🔐 رمز مدیریتی: {ADMIN_PASSWORD}")
+    client.run()

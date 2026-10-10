@@ -29,19 +29,16 @@ oiMhyMOHtZhSrKyWEsWuQR9UcHis+142gcezc4dh
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# --- تابع امن برای ارسال پیام ---
+# --- تابع امن ارسال پیام ---
 def safe_reply(message, text):
-    """ارسال پیام با چند روش جایگزین تا کراش نکنه"""
     try:
         message.reply(text)
         return True
-    except Exception as e1:
-        print(f"reply failed: {e1}")
+    except Exception:
         try:
             client.send_message(message.chat_id, text)
             return True
-        except Exception as e2:
-            print(f"send_message failed: {e2}")
+        except Exception:
             try:
                 client.methods.sendText(
                     objectGuid=message.object_guid,
@@ -49,8 +46,7 @@ def safe_reply(message, text):
                     messageId=message.message_id
                 )
                 return True
-            except Exception as e3:
-                print(f"sendText failed: {e3}")
+            except Exception:
                 return False
 
 # --- توابع داده ---
@@ -73,15 +69,34 @@ def apply_formatting(text):
     return text
 
 qa_data = load_data()
+admin_authenticated = False
 conversation_state = None
 temp_question = ""
+
+# --- متن راهنمای مدیر ---
+ADMIN_HELP = """راهنمای مدیر:
+
+1) ذخیره سوال جدید:
+   &&& رو بفرست، بعد سوال رو بنویس، بعد جواب رو بفرست.
+
+2) مشاهده لیست سوالات:
+   #### رو بفرست.
+
+3) حذف یک سوال:
+   شماره سوال + حذف سؤال
+   مثال: 1 حذف سؤال
+
+4) خروج از حالت مدیر:
+   خروج رو بفرست.
+
+نکته: پاسخ به سوالات برای همه کاربران آزاد است."""
 
 # --- ساخت کلاینت ---
 client = Client(auth=AUTH_KEY, private=PRIVATE_KEY)
 
 @client.on_message()
 def handler(message: Message):
-    global qa_data, conversation_state, temp_question
+    global qa_data, admin_authenticated, conversation_state, temp_question
 
     try:
         is_text = bool(message.text)
@@ -89,15 +104,6 @@ def handler(message: Message):
                   bool(getattr(message, 'video', None)) or bool(getattr(message, 'gif', None))
 
         # --- حالت‌های چند مرحله‌ای ---
-        if conversation_state == "waiting_password":
-            if is_text and message.text.strip() == ADMIN_PASSWORD:
-                conversation_state = None
-                safe_reply(message, "رمز صحیح است.\n\n&&& = ذخیره\n#### = لیست\n1 حذف سؤال = حذف")
-            else:
-                conversation_state = None
-                safe_reply(message, "رمز اشتباه است.")
-            return
-
         if conversation_state == "waiting_question":
             if not is_text:
                 safe_reply(message, "لطفاً متن سوال را بفرست.")
@@ -142,33 +148,84 @@ def handler(message: Message):
             temp_question = ""
             return
 
-        # --- دستورات مدیریتی ---
-        if is_text:
-            text = message.text.strip()
+        if not is_text:
+            return
 
-            if text in ["&&&", "####"] or re.match(r"^\d+\s+حذف\s+سؤال$", text):
-                conversation_state = "waiting_password"
-                safe_reply(message, "رمز مدیریتی را وارد کن:")
+        text = message.text.strip()
+
+        # --- 1. بررسی رمز ---
+        if text == ADMIN_PASSWORD:
+            admin_authenticated = True
+            safe_reply(message, ADMIN_HELP)
+            return
+
+        # --- 2. خروج از حالت مدیر ---
+        if admin_authenticated and text == "خروج":
+            admin_authenticated = False
+            safe_reply(message, "از حالت مدیر خارج شدی.")
+            return
+
+        # --- 3. راهنما (فقط برای مدیر) ---
+        if admin_authenticated and text in ["راهنما", "help", "/help"]:
+            safe_reply(message, ADMIN_HELP)
+            return
+
+        # --- 4. دستورات مدیریتی ---
+        if admin_authenticated:
+            if text == "&&&":
+                conversation_state = "waiting_question"
+                safe_reply(message, "لطفا سؤال را وارد کنید")
                 return
 
-            # --- پاسخ خودکار ---
-            for question, answer_data in qa_data.items():
-                if question in text:
-                    if answer_data["type"] == "text":
-                        safe_reply(message, apply_formatting(answer_data["content"]))
-                    elif answer_data["type"] == "file":
-                        fp = answer_data["content"]
-                        if os.path.exists(fp):
-                            try:
-                                if hasattr(message, 'reply_file'):
-                                    message.reply_file(fp)
-                                elif hasattr(client, 'send_file'):
-                                    client.send_file(message.chat_id, fp)
-                            except Exception as e:
-                                safe_reply(message, f"خطا: {e}")
+            if text == "####":
+                if not qa_data:
+                    safe_reply(message, "هیچ سوالی ذخیره نشده است.")
+                else:
+                    list_text = "لیست سوال و جواب‌ها:\n" + "-"*20 + "\n"
+                    for idx, (q, a) in enumerate(qa_data.items(), 1):
+                        if a["type"] == "text":
+                            list_text += f"{idx}. سؤال: {q}\n   جواب: {a['content']}\n"
                         else:
-                            safe_reply(message, "فایل یافت نشد.")
-                    return
+                            list_text += f"{idx}. سؤال: {q}\n   جواب: [فایل]\n"
+                    safe_reply(message, list_text)
+                return
+
+            delete_match = re.match(r"^(\d+)\s+حذف\s+سؤال$", text)
+            if delete_match:
+                idx = int(delete_match.group(1))
+                if 1 <= idx <= len(qa_data):
+                    keys = list(qa_data.keys())
+                    q_del = keys[idx-1]
+                    if qa_data[q_del]["type"] == "file":
+                        fp = qa_data[q_del]["content"]
+                        if os.path.exists(fp):
+                            os.remove(fp)
+                    del qa_data[q_del]
+                    save_data(qa_data)
+                    safe_reply(message, f"سؤال «{q_del}» حذف شد.")
+                else:
+                    safe_reply(message, "شماره نامعتبر است.")
+                return
+
+        # --- 5. پاسخ خودکار به همه کاربران ---
+        for question, answer_data in qa_data.items():
+            if question in text:
+                if answer_data["type"] == "text":
+                    safe_reply(message, apply_formatting(answer_data["content"]))
+                elif answer_data["type"] == "file":
+                    fp = answer_data["content"]
+                    if os.path.exists(fp):
+                        try:
+                            if hasattr(message, 'reply_file'):
+                                message.reply_file(fp)
+                            elif hasattr(client, 'send_file'):
+                                client.send_file(message.chat_id, fp)
+                        except Exception as e:
+                            safe_reply(message, f"خطا: {e}")
+                    else:
+                        safe_reply(message, "فایل یافت نشد.")
+                return
+
     except Exception as e:
         print(f"Handler error: {e}")
 
